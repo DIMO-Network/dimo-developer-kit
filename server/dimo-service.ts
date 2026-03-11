@@ -83,17 +83,13 @@ export class DimoService {
       const query = `
         {
           signalsLatest(tokenId: ${tokenId}) {
-            currentLocationLatitude {
+            currentLocationCoordinates {
               timestamp
-              value
-            }
-            currentLocationLongitude {
-              timestamp
-              value
-            }
-            dimoAftermarketHDOP {
-              timestamp
-              value
+              value {
+                latitude
+                longitude
+                hdop
+              }
             }
             lastSeen
           }
@@ -108,9 +104,10 @@ export class DimoService {
       console.log("DIMO Telemetry API response:", locationData);
 
       const signalsData = locationData?.data?.signalsLatest;
-      const latitude = signalsData?.currentLocationLatitude?.value;
-      const longitude = signalsData?.currentLocationLongitude?.value;
-      const hdop = signalsData?.dimoAftermarketHDOP?.value;
+      const coords = signalsData?.currentLocationCoordinates?.value;
+      const latitude = coords?.latitude;
+      const longitude = coords?.longitude;
+      const hdop = coords?.hdop;
 
       if (!latitude || !longitude) {
         throw new Error("No location data available for this vehicle");
@@ -121,7 +118,7 @@ export class DimoService {
         lat: parseFloat(latitude),
         lng: parseFloat(longitude),
         hdop: hdop ? parseFloat(hdop) : 1.0,
-        timestamp: signalsData?.lastSeen || new Date().toISOString(),
+        timestamp: signalsData?.currentLocationCoordinates?.timestamp || signalsData?.lastSeen || new Date().toISOString(),
       };
     } catch (error) {
       console.error("Error fetching DIMO vehicle location:", error);
@@ -139,7 +136,7 @@ export class DimoService {
       const from = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
       const to = new Date().toISOString();
 
-      // Query telemetry API for latest location data
+      // Query telemetry API for historical location data
       const query = `
         {
           signals(
@@ -148,8 +145,12 @@ export class DimoService {
             to: "${to}",
             interval: "6h"
           ) {
-            currentLocationLatitude (agg: LAST)
-            currentLocationLongitude (agg: LAST)
+            timestamp
+            currentLocationCoordinates (agg: LAST) {
+              latitude
+              longitude
+              hdop
+            }
           }
         }
       `;
@@ -169,25 +170,34 @@ export class DimoService {
         throw new Error("No location data available for this vehicle");
       }
 
+      // Filter out entries without valid coordinates
+      const validPoints = signalsData.filter(
+        (point: any) => point.currentLocationCoordinates?.latitude && point.currentLocationCoordinates?.longitude
+      );
+
+      if (validPoints.length === 0) {
+        throw new Error("No location data available for this vehicle");
+      }
+
       // Average lat/lng
-      const { totalLat, totalLng } = signalsData.reduce(
-        (acc, point) => {
-          acc.totalLat += point.currentLocationLatitude;
-          acc.totalLng += point.currentLocationLongitude;
+      const { totalLat, totalLng } = validPoints.reduce(
+        (acc: any, point: any) => {
+          acc.totalLat += point.currentLocationCoordinates.latitude;
+          acc.totalLng += point.currentLocationCoordinates.longitude;
           return acc;
         },
         { totalLat: 0, totalLng: 0 },
       );
 
-      const avgLat = totalLat / signalsData.length;
-      const avgLng = totalLng / signalsData.length;
+      const avgLat = totalLat / validPoints.length;
+      const avgLng = totalLng / validPoints.length;
 
       // Convert to GPS format for your app
       return {
         lat: avgLat,
         lng: avgLng,
         hdop: 1000.0,
-        datapoints: signalsData.length,
+        datapoints: validPoints.length,
       };
     } catch (error) {
       console.error("Error fetching DIMO vehicle location:", error);
